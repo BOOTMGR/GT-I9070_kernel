@@ -196,7 +196,7 @@ export KBUILD_BUILDHOST := $(SUBARCH)
 #CROSS_COMPILE	?= $(CONFIG_CROSS_COMPILE:"%"=%)
 ARCH            ?= arm
 #CROSS_COMPILE   = ../prebuilt/linux-x86/toolchain/arm-eabi-4.4.3/bin/arm-eabi-
-CROSS_COMPILE   = /home/nomanman/android/kernel/toolchains/arm-eabi-4.4.3/bin
+CROSS_COMPILE   = /home/nomanman/android/kernel/toolchains/arm-eabi-4.4.3/bin/arm-eabi-
 
 # Architecture as present in compile.h
 UTS_MACHINE 	:= $(ARCH)
