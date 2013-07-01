@@ -662,6 +662,12 @@ config FSYNC_CONTROL
         help
           Say Y here to enable FSync Control
 
+config GENERIC_BLN
+	bool "Support for Backlight Notifications"
+	default y
+	help
+	  Say Y here to enable BLN Support
+
 
 
 endif # MISC_DEVICES

@@ -69,3 +69,4 @@ obj-$(CONFIG_USE_DPP2601)	+= projector/
 obj-$(CONFIG_NFC_PN544)		+= pn544.o
 
 obj-$(CONFIG_FSYNC_CONTROL)	+= fsync_control.o
+obj-$(CONFIG_GENERIC_BLN) 	+= bln.o
