@@ -31,6 +31,14 @@
 #include <asm/unaligned.h>
 #include <linux/firmware.h>
 #include <linux/input/mt.h>
+#include <linux/ab8500-ponkey.h>
+
+#include <plat/pincfg.h>
+#include <plat/gpio-nomadik.h>
+
+#include <mach/board-sec-u8500.h>
+#include <mach/../../pins-db8500.h>
+#include <mach/../../pins.h>
 
 #if defined(TOUCH_BOOSTER)
 #include <linux/mfd/dbx500-prcmu.h>
@@ -181,23 +189,48 @@ module_param(nexttchdi_con, bool, 0644);
 static unsigned int nexttchdi_batt = 0;			/* default: 0 */
 module_param(nexttchdi_batt, uint, 0644);
 
-/* cocafe: Touch Auto Calibration */
-#define MXT224E_EDGE_X			50
-#define MXT224E_EDGE_Y			750
+/* cocafe: SweepToWake */
+/* FIXME: Will cause ux500 pins wakeup now */
+#define ABS_THRESHOLD_X			150
+#define ABS_THRESHOLD_Y			240
 
-static bool calibration_auto = true;
-module_param(calibration_auto, bool, 0644);
+static int x_press, x_release;
+static int y_press, y_release;
 
-static unsigned int calibration_edge = 9;		/* threshold: edge touches */
-module_param(calibration_edge, uint, 0644);
+static int x_threshold = ABS_THRESHOLD_X;
+module_param(x_threshold, int, 0644);
+static int y_threshold = ABS_THRESHOLD_Y;
+module_param(y_threshold, int, 0644);
 
-static unsigned int edgetouch_x = MXT224E_EDGE_X;
-module_param(edgetouch_x, uint, 0644);
+static bool is_suspend = false;
+static bool waking_up = false;
 
-static unsigned int edgetouch_y = MXT224E_EDGE_Y;
-module_param(edgetouch_y, uint, 0644);
+static bool sweep2wake = false;
+module_param(sweep2wake, bool, 0644);
 
-static unsigned int edgetouch_counter;
+static void mxt224e_ponkey_thread(struct work_struct *mxt224e_ponkey_work)
+{
+	waking_up = true;
+
+	pr_err("[TSP] %s fn\n", __func__);
+
+	ab8500_ponkey_emulator(1);	/* press */
+
+	msleep(100);
+
+	ab8500_ponkey_emulator(0);	/* release */
+	
+	waking_up = false;
+}
+static DECLARE_WORK(mxt224e_ponkey_work, mxt224e_ponkey_thread);
+
+/*
+static pin_cfg_t janice_mxt224e_pins_wakeup[] = 
+{
+	GPIO94_GPIO | PIN_OUTPUT_HIGH | PIN_SLPM_OUTPUT_HIGH |
+		PIN_SLPM_WAKEUP_ENABLE | PIN_SLPM_PDIS_DISABLED, 
+};
+*/
 
 /* cocafe: Debugging Prints */
 static bool debug_mask = false;
@@ -830,7 +863,8 @@ void check_chip_calibration(struct mxt224_data *data)
 			}
 		}
 
-		printk(KERN_INFO "[TSP] t: %d  a: %d\n", tch_ch, atch_ch);
+		if (debug_mask)
+			printk(KERN_INFO "[TSP] t: %d  a: %d\n", tch_ch, atch_ch);
 
 		/* send page up command so we can detect
 		   when data updates next time,
@@ -1086,7 +1120,7 @@ static void report_input_data(struct mxt224_data *data)
 		goto out;
 
 	#if defined(TOUCH_BOOSTER)
-	if (touchboost) {
+	if (touchboost && !is_suspend) {
 		if (data->fingers[id].state == MXT224_STATE_PRESS) {
 			if (data->finger_cnt == 0) {
 				if (touchboost_ape) {
@@ -1168,12 +1202,19 @@ static void report_input_data(struct mxt224_data *data)
 		}
 	}
 
-	if (calibration_auto) {
-		if (data->fingers[id].state == MXT224_STATE_RELEASE) {
-			if (data->fingers[id].x < edgetouch_x && 
-			data->fingers[id].y > edgetouch_y) {
-				edgetouch_counter++;
-				printk("[TSP] EdgeTouch counter: [%d]\n", edgetouch_counter);
+	if (is_suspend) {
+		if (sweep2wake) {
+			if (data->fingers[0].state == MXT224_STATE_PRESS) {
+				x_press = data->fingers[0].x;
+				y_press = data->fingers[0].y;
+			} else if (data->fingers[0].state == MXT224_STATE_RELEASE) {
+				x_release = data->fingers[0].x;
+				y_release = data->fingers[0].y;
+				if ((abs(x_release - x_press) >= x_threshold) ||
+					(abs(y_release - y_press) >= y_threshold)) {
+						if (!waking_up)
+							schedule_work(&mxt224e_ponkey_work);
+				}
 			}
 		}
 	}
@@ -1183,17 +1224,6 @@ static void report_input_data(struct mxt224_data *data)
 	else {
 		data->fingers[id].state = MXT224_STATE_MOVE;
 		count++;
-	}
-
-	if (calibration_auto) {
-		if (data->fingers[id].state == MXT224_STATE_INACTIVE) {
-			if (edgetouch_counter >= calibration_edge) {
-				printk("[TSP] Auto calibration ON!!!\n");
-				mxt224_ta_probe(vbus_state);
-				calibrate_chip();
-				edgetouch_counter = 0;
-			}
-		}
 	}
 
 	input_sync(data->input_dev);
@@ -1584,9 +1614,34 @@ static void mxt224_early_suspend(struct early_suspend *h)
 	struct mxt224_data *data =
 			container_of(h, struct mxt224_data, early_suspend);
 
+	is_suspend = true;
+
 	mutex_lock(&data->lock);
 	if (!data->enabled)
 		goto out;
+
+	if (sweep2wake) {
+		if (data->finger_cnt > 0) {
+			prcmu_qos_update_requirement(
+				PRCMU_QOS_APE_OPP,
+				(char *)data->client->name,
+				PRCMU_QOS_DEFAULT_VALUE);
+			prcmu_qos_update_requirement(
+				PRCMU_QOS_DDR_OPP,
+				(char *)data->client->name,
+				PRCMU_QOS_DEFAULT_VALUE);
+			prcmu_qos_update_requirement(
+				PRCMU_QOS_ARM_KHZ,
+				(char *)data->client->name,
+				PRCMU_QOS_DEFAULT_VALUE);
+	
+			data->finger_cnt = 0;
+		}
+	
+		/* nmk_config_pins(janice_mxt224e_pins_wakeup, ARRAY_SIZE(janice_mxt224e_pins_wakeup)); */
+
+		goto out;
+	}
 
 	disable_irq(data->client->irq);
 	data->enabled = 0;
@@ -1611,17 +1666,20 @@ static void mxt224_late_resume(struct early_suspend *h)
 	struct mxt224_data *data =
 			container_of(h, struct mxt224_data, early_suspend);
 
+	is_suspend = false;
+
 	valid_touch = 0;
 
 	mutex_lock(&data->lock);
-	if (data->enabled)
+	if (data->enabled && !sweep2wake)
 		goto out;
+
 	data->enabled = 1;
 
 	mxt224_internal_resume(data);
 
-//	dev_info(&data->client->dev, "vbus_state = %d\n", (int)vbus_state);
 	pr_info("[TSP] vbus_state = %d\n", (int)vbus_state);
+
 	if (!(tsp_deepsleep && vbus_state))
 		mxt224_ta_probe(vbus_state);
 
@@ -1630,7 +1688,8 @@ static void mxt224_late_resume(struct early_suspend *h)
 
 	calibrate_chip();
 
-	enable_irq(data->client->irq);
+	if (!sweep2wake)
+		enable_irq(data->client->irq);
 
 out:
 	mutex_unlock(&data->lock);
@@ -2380,7 +2439,7 @@ ssize_t disp_all_deltadata_store(struct device *dev, struct device_attribute *at
 
 static ssize_t set_tsp_name_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sprintf(buf, "ATMEL,XMT224E\n");
+	return sprintf(buf, "ATMEL mxT224E\n");
 }
 
 static ssize_t set_tsp_channel_show(struct device *dev, struct device_attribute *attr, char *buf)
