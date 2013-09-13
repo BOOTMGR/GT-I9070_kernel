@@ -191,6 +191,56 @@ static int gamma_val;
 static bool illumination_req = false;
 static unsigned int illumination_val = ILLUMINATION_MIN;
 
+/* cocafe: S6E63M0 PRCMU LCDCLK */
+/* 60+++ 	79872000	unsafe
+ * 60++		66560000	unsafe
+ * 60+		57051428	unsafe
+ * 60		49920000
+ * 50		39936000
+ * 45		36305454
+ * 40		33280000
+ */
+#include <linux/mfd/dbx500-prcmu.h>
+#include <linux/mfd/db8500-prcmu.h>
+
+#define LCDCLK_SET(clk)		prcmu_set_clock_rate(PRCMU_LCDCLK, (unsigned long) clk);
+
+struct lcdclk_prop
+{
+	char *name;
+	unsigned int clk;
+};
+
+static struct lcdclk_prop lcdclk_prop[] = {
+	[0] = {
+		.name = "60Hz",
+		.clk = 49920000,
+	},
+	[1] = {
+		.name = "50Hz",
+		.clk = 39936000,
+	},
+	[2] = {
+		.name = "45Hz",
+		.clk = 36305454,
+	},
+	[3] = {
+		.name = "40Hz",
+		.clk = 33280000,
+	},
+};
+
+static unsigned int lcdclk_usr = 0;	/* 60fps */
+
+static void s6e63m0_lcdclk_thread(struct work_struct *s6e6m0_lcdclk_work)
+{
+	msleep(200);
+
+	pr_err("[S6E63M0] LCDCLK %dHz\n", lcdclk_prop[lcdclk_usr].clk);
+
+	LCDCLK_SET(lcdclk_prop[lcdclk_usr].clk);
+}
+static DECLARE_WORK(s6e63m0_lcdclk_work, s6e63m0_lcdclk_thread);
 
 #ifdef SMART_DIMMING
 #define LDI_MTP_LENGTH 21
@@ -1038,7 +1088,7 @@ int illumination_tabel[] =
 };
 #else
 int illumination_tabel[] = {
-30, 40, 50, 60, 70, 80, 90,
+25, 40, 50, 60, 70, 80, 90,
 100, 105, 110, 120, 130, 140,
 150, 160, 170, 173, 180, 193,
 198, 203, 213, 223, 233, 243,
@@ -1925,21 +1975,10 @@ static ssize_t s6e63m0_sysfs_show_gamma_mode(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	struct s6e63m0 *lcd = dev_get_drvdata(dev);
-	char temp[10];
 
-	switch (lcd->gamma_mode) {
-	case 0:
-		sprintf(temp, "2.2 mode\n");
-		strcat(buf, temp);
-		break;
-	case 1:
-		sprintf(temp, "1.9 mode\n");
-		strcat(buf, temp);
-		break;
-	default:
-		dev_dbg(dev, "gamma mode could be 2.2 or 1.9)n");
-		break;
-	}
+	sprintf(buf, "Current: %s\n\n", lcd->gamma_mode ? "1.9" : "2.2");
+	sprintf(buf, "%s[0][%s] 2.2 mode\n", buf, lcd->gamma_mode ? " " : "*");
+	sprintf(buf, "%s[1][%s] 1.9 mode\n", buf, lcd->gamma_mode ? "*" : " ");
 
 	return strlen(buf);
 }
@@ -2468,6 +2507,256 @@ static ssize_t s6e63m0_sysfs_store_ulow_brightness(struct device *dev,
 static DEVICE_ATTR(ulow_brightness, 0644,
 		s6e63m0_sysfs_show_ulow_brightness, s6e63m0_sysfs_store_ulow_brightness);
 
+static ssize_t s6e63m0_sysfs_show_mcde_chnl(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct s6e63m0 *lcd = dev_get_drvdata(dev);
+
+	sprintf(buf,   "[S6E63M0 MCDE Channel]\n");
+	sprintf(buf, "%spixclock: %d\n", buf, lcd->ddev->video_mode.pixclock);
+	sprintf(buf, "%shbp: %d\n", buf, lcd->ddev->video_mode.hbp);
+	sprintf(buf, "%shfp: %d\n", buf, lcd->ddev->video_mode.hfp);
+	sprintf(buf, "%shsw: %d\n", buf, lcd->ddev->video_mode.hsw);
+	sprintf(buf, "%svbp: %d\n", buf, lcd->ddev->video_mode.vbp);
+	sprintf(buf, "%svfp: %d\n", buf, lcd->ddev->video_mode.vfp);
+	sprintf(buf, "%svsw: %d\n", buf, lcd->ddev->video_mode.vsw);
+	sprintf(buf, "%sinterlaced: %d\n", buf, lcd->ddev->video_mode.interlaced);
+
+	return strlen(buf);
+}
+
+static ssize_t s6e63m0_sysfs_store_mcde_chnl(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t len)
+{
+	struct s6e63m0 *lcd = dev_get_drvdata(dev);
+	int ret;
+	u32 pclk;	/* pixel clock in ps (pico seconds) */
+	u32 hbp;	/* horizontal back porch: left margin (excl. hsync) */
+	u32 hfp;	/* horizontal front porch: right margin (excl. hsync) */
+	u32 hsw;	/* horizontal sync width */
+	u32 vbp;	/* vertical back porch: upper margin (excl. vsync) */
+	u32 vfp;	/* vertical front porch: lower margin (excl. vsync) */
+	u32 vsw;
+	u32 interlaced;
+	u32 enable;
+
+	if (!strncmp(buf, "set_vmode", 8))
+	{
+		pr_err("[S6E63M0] Save chnl params\n");
+		mcde_chnl_set_video_mode(lcd->ddev->chnl_state, &lcd->ddev->video_mode);
+
+		return len;
+	}
+
+	if (!strncmp(buf, "apply_config", 8)) 
+	{
+		pr_err("[S6E63M0] Apply chnl config!\n");
+		mcde_chnl_apply(lcd->ddev->chnl_state);
+		
+		return len;
+	}
+
+	if (!strncmp(buf, "stop_flow", 8)) 
+	{
+		pr_err("[S6E63M0] MCDE chnl stop flow!\n");
+		mcde_chnl_stop_flow(lcd->ddev->chnl_state);
+		
+		return len;
+	}
+
+	if (!strncmp(buf, "update", 6)) 
+	{
+		pr_err("[S6E63M0] Update MCDE chnl!\n");
+		mcde_chnl_set_video_mode(lcd->ddev->chnl_state, &lcd->ddev->video_mode);
+		mcde_chnl_apply(lcd->ddev->chnl_state);
+		mcde_chnl_stop_flow(lcd->ddev->chnl_state);
+		
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "enable=", 7))
+	{
+		sscanf(&buf[7], "%d", &enable);
+		pr_err("[S6E63M0] %s chnl\n", enable ? "Enable" : "Disable");
+
+		if (!enable)
+			mcde_chnl_disable(lcd->ddev->chnl_state);
+		else
+			mcde_chnl_enable(lcd->ddev->chnl_state);
+		
+		return len;
+	}
+	
+	if (!strncmp(&buf[0], "pclk=", 5))
+	{
+		ret = sscanf(&buf[5], "%d", &pclk);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] pclk: %d\n", pclk);
+		lcd->ddev->video_mode.pixclock = pclk;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "hbp=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &hbp);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] hbp: %d\n", hbp);
+		lcd->ddev->video_mode.hbp = hbp;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "hfp=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &hfp);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] hfp: %d\n", hfp);
+		lcd->ddev->video_mode.hfp = hfp;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "hsw=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &hsw);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] hsw: %d\n", hsw);
+		lcd->ddev->video_mode.hsw = hsw;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "vbp=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &vbp);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] vbp: %d\n", vbp);
+		lcd->ddev->video_mode.vbp = vbp;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "vfp=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &vfp);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] vfp: %d\n", vfp);
+		lcd->ddev->video_mode.vfp = vfp;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "vsw=", 4))
+	{
+		ret = sscanf(&buf[4], "%d", &vsw);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] vsw: %d\n", vsw);
+		lcd->ddev->video_mode.vsw = vsw;
+
+		return len;
+	}
+
+	if (!strncmp(&buf[0], "interlaced=", 11))
+	{
+		ret = sscanf(&buf[11], "%d", &interlaced);
+		if (!ret) {
+			pr_err("[S6E63M0] Invaild param\n");
+	
+			return -EINVAL;
+		}
+
+		pr_err("[S6E63M0] interlaced: %d\n", interlaced);
+		lcd->ddev->video_mode.interlaced = interlaced;
+
+		return len;
+	}
+
+	pr_err("[S6E63M0] Invaild cmd\n");
+
+	return len;
+}
+
+static DEVICE_ATTR(mcde_chnl, 0644,
+		s6e63m0_sysfs_show_mcde_chnl, s6e63m0_sysfs_store_mcde_chnl);
+
+static ssize_t s6e63m0_sysfs_show_lcdclk(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	int i;
+	bool matched;
+
+	sprintf(buf, "Current: %s\n\n", lcdclk_prop[lcdclk_usr].name);
+
+	for (i = 0; i <= 3; i++) {
+		if (i == lcdclk_usr)
+			matched = true;
+		else
+			matched = false;
+
+		sprintf(buf, "%s[%d][%s] %s\n", buf, i, matched ? "*" : " ", lcdclk_prop[i].name);
+	}
+
+	return strlen(buf);
+}
+
+static ssize_t s6e63m0_sysfs_store_lcdclk(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t len)
+{
+	int ret, tmp;
+
+	ret = sscanf(buf, "%d", &tmp);
+	if (!ret || (tmp < 0) || (tmp > 3)) {
+		pr_err("[S6E63M0] Bad cmd\n");
+		return -EINVAL;
+	}
+
+	lcdclk_usr = tmp;
+
+	schedule_work(&s6e63m0_lcdclk_work);
+
+	return len;
+}
+
+static DEVICE_ATTR(lcdclk, 0644, s6e63m0_sysfs_show_lcdclk, s6e63m0_sysfs_store_lcdclk);
+
 /* TODO: Debug the panel id issue */
 static ssize_t s6e63m0_sysfs_show_panel_smtid(struct device *dev,
 				      struct device_attribute *attr, char *buf)
@@ -2560,7 +2849,7 @@ static int s6e63m0_set_power_mode(struct mcde_display_device *ddev,
 	}
 
 	if (orig_mode != ddev->power_mode)
-		dev_warn(&ddev->dev, "Power from mode %d to %d\n",
+		pr_err("[S6E63M0] Power from mode %d to %d\n",
 			orig_mode, ddev->power_mode);
 
 	ret =  mcde_chnl_set_power_mode(ddev->chnl_state, ddev->power_mode);
@@ -2780,6 +3069,14 @@ static int __devinit s6e63m0_mcde_panel_probe(struct mcde_display_device *ddev)
 	if (ret < 0)
 		dev_err(&(ddev->dev), "failed to add sysfs entries\n");
 
+	ret = device_create_file(&(ddev->dev), &dev_attr_mcde_chnl);
+	if (ret < 0)
+		dev_err(&(ddev->dev), "failed to add sysfs entries\n");
+
+	ret = device_create_file(&(ddev->dev), &dev_attr_lcdclk);
+	if (ret < 0)
+		dev_err(&(ddev->dev), "failed to add sysfs entries\n");
+
 	lcd->spi_drv.driver.name	= "pri_lcd_spi";
 	lcd->spi_drv.driver.bus		= &spi_bus_type;
 	lcd->spi_drv.driver.owner	= THIS_MODULE;
@@ -2860,7 +3157,7 @@ static int s6e63m0_mcde_panel_resume(struct mcde_display_device *ddev)
 	int ret;
 //	struct s6e63m0 *lcd = dev_get_drvdata(&ddev->dev);
 	DPI_DISP_TRACE;
-	dev_info(&ddev->dev, "Invoked %s\n", __func__);
+	pr_err("[S6E63M0] MCDE panel resumed\n");
 
 	/* set_power_mode will handle call platform_enable */
 	ret = ddev->set_power_mode(ddev, MCDE_DISPLAY_PM_STANDBY);
@@ -2876,7 +3173,7 @@ static int s6e63m0_mcde_panel_suspend(struct mcde_display_device *ddev, pm_messa
 	int ret = 0;
 //	struct s6e63m0 *lcd = dev_get_drvdata(&ddev->dev);
 
-	dev_info(&ddev->dev, "Invoked %s\n", __func__);
+	pr_err("[S6E63M0] MCDE panel suspended\n");
 
 	/*
 	 * when lcd panel is suspend, lcd panel becomes off
@@ -2909,7 +3206,7 @@ static pin_cfg_t janice_resume_pins[] = {
 static int dpi_display_platform_enable(struct s6e63m0 *lcd)
 {
 	int res = 0;
-	dev_info(lcd->dev, "%s\n", __func__);
+	pr_err("[S6E63M0] Display enabled\n");
 	nmk_config_pins(janice_resume_pins, ARRAY_SIZE(janice_resume_pins));
 	res = ux500_pins_enable(dpi_pins);
 	if (res)
@@ -2920,7 +3217,7 @@ static int dpi_display_platform_enable(struct s6e63m0 *lcd)
 static int dpi_display_platform_disable(struct s6e63m0 *lcd)
 {
 	int res = 0;
-	dev_info(lcd->dev, "%s\n", __func__);
+	pr_err("[S6E63M0] Display disabled\n");
 	nmk_config_pins(janice_sleep_pins, ARRAY_SIZE(janice_sleep_pins));
 
 	/* pins disabled to save power */
@@ -2953,6 +3250,11 @@ static void s6e63m0_mcde_panel_late_resume(struct early_suspend *earlysuspend)
 
 	dpi_display_platform_enable(lcd);
 	s6e63m0_mcde_panel_resume(lcd->ddev);
+
+	if (lcdclk_usr != 0) {
+		pr_err("[S6E63M0] Rebasing LCDCLK...\n");
+		schedule_work(&s6e63m0_lcdclk_work);
+	}
 }
 #endif
 
