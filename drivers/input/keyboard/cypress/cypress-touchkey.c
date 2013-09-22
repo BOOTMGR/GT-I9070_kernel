@@ -83,8 +83,8 @@ static u8 touchkey_threshold;
 #define PRESS_BIT_MASK		0X08
 #define KEYCODE_BIT_MASK	0X07
 
-#define TOUCHKEY_LOG(k, v) dev_notice(&info->client->dev, "key[%d] %d\n", k, v);
-#define FUNC_CALLED dev_notice(&info->client->dev, "%s: called.\n", __func__);
+#define TOUCHKEY_LOG(k, v) pr_info("[Touchkey] Key[%d] %d\n", k, v);
+#define FUNC_CALLED pr_info("[Touchkey] [fn] %s\n", __func__);
 
 #define NUM_OF_RETRY_UPDATE	5
 #define NUM_OF_RETRY_I2C	2
@@ -95,6 +95,9 @@ extern bool vbus_state;
 
 static struct workqueue_struct *touchkey_wq;
 static struct work_struct update_work;
+
+static bool debug_mask = false;
+module_param(debug_mask, bool, 0644);
 
 static bool suspend_con = false;
 module_param(suspend_con, bool, 0644);
@@ -173,7 +176,7 @@ static void cypress_touchkey_brightness_set
 	if (info->current_status && !touchkey_update_status)
 		queue_work(info->led_wq, &info->led_work);
 	else
-		dev_notice(&info->client->dev, "%s under suspend status or FW updating\n", __func__);
+		pr_err("[TouchKey] Set brightness: under suspend status or FW updating\n");
 }
 #endif
 
@@ -276,7 +279,8 @@ static void cypress_touchkey_work(struct work_struct *work)
 	}
 
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-	TOUCHKEY_LOG(info->keycode[code], press);
+	if (debug_mask)
+		TOUCHKEY_LOG(info->keycode[code], press);
 #endif
 
 	if (touch_is_pressed && press) {
@@ -358,7 +362,7 @@ static void cypress_touchkey_con_hw(struct cypress_touchkey_info *info, bool fla
 		}
 	}
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
-	dev_notice(&info->client->dev, "%s : called with flag %d.\n", __func__, flag);
+	pr_info("[Touchkey] [fn] %s [flag %d]\n", __func__, flag);
 #endif
 }
 

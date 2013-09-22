@@ -1624,7 +1624,7 @@ static int update_brightness(struct s6e63m0 *lcd, u8 force)
 	if ((force) || ((lcd->ldi_state) &&
 				(lcd->current_brightness != lcd->bl))) {
 
-	printk("s6e63m0: brightness [%d] gamma [%d]\n", bl, lcd->bl);
+	printk("[S6E63M0] Brightness: %d BL: %d\n", bl, lcd->bl);
 
 		ret = s6e63m0_set_elvss(lcd);
 		if (ret) {
@@ -1942,7 +1942,7 @@ static ssize_t auto_brightness_store(struct device *dev,
 		return rc;
 	else {
 		if (lcd->auto_brightness != value) {
-			dev_info(dev, "%s - %d, %d\n", __func__, lcd->auto_brightness, value);
+			pr_err("[S6E63M0] Auto Brightness %d ==> %d\n", lcd->auto_brightness, value);
 			mutex_lock(&lcd->lcd_lock);
 			lcd->auto_brightness = value;
 			mutex_unlock(&lcd->lcd_lock);
