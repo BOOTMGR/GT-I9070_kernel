@@ -36,6 +36,10 @@
 
 #include <mach/board-sec-u8500.h>
 
+#if CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
+
 #define CYPRESS_GEN		0X00
 #define CYPRESS_FW_VER		0X01
 #define CYPRESS_MODULE_VER	0X02
@@ -65,6 +69,10 @@
 
 #ifdef CONFIG_LEDS_CLASS
 #define TOUCHKEY_BACKLIGHT	"button-backlight"
+#endif
+
+#if CONFIG_HAS_WAKELOCK
+static struct wake_lock t2w_wakelock;
 #endif
 
 /*sec_class sysfs*/
@@ -99,8 +107,9 @@ static struct work_struct update_work;
 static bool debug_mask = false;
 module_param(debug_mask, bool, 0644);
 
-static bool suspend_con = false;
-module_param(suspend_con, bool, 0644);
+static bool bTouch2Wake = false;
+
+static bool led_disabled = false;
 
 extern int touch_is_pressed;
 struct cypress_touchkey_info {
@@ -176,7 +185,7 @@ static void cypress_touchkey_brightness_set
 	if (info->current_status && !touchkey_update_status)
 		queue_work(info->led_wq, &info->led_work);
 	else
-		pr_err("[TouchKey] Set brightness: under suspend status or FW updating\n");
+		pr_err("[TouchKey] Not allowed to set LED backlight\n");
 }
 #endif
 
@@ -356,7 +365,7 @@ static void cypress_touchkey_con_hw(struct cypress_touchkey_info *info, bool fla
 		gpio_set_value(info->pdata->gpio_ldo_en, 1);
 		gpio_set_value(info->pdata->gpio_led_en, 1);
 	} else {
-		if (!suspend_con) {
+		if (!bTouch2Wake) {
 			gpio_set_value(info->pdata->gpio_led_en, 0);
 			gpio_set_value(info->pdata->gpio_ldo_en, 0);
 		}
@@ -472,6 +481,95 @@ static int cypress_touchkey_led_off(struct cypress_touchkey_info *info)
 	return ret;
 }
 */
+
+static ssize_t cypress_touch2wake_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	sprintf(buf, "status: %s\n", bTouch2Wake ? "on" : "off");
+	#if CONFIG_HAS_WAKELOCK
+	sprintf(buf, "%swakelock_ena: %d\n", buf, wake_lock_active(&t2w_wakelock));
+	#endif
+
+	return strlen(buf);
+}
+
+static ssize_t cypress_touch2wake_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	if (!strncmp(buf, "on", 2)) {
+		bTouch2Wake = true;
+
+		#if CONFIG_HAS_WAKELOCK
+		wake_lock(&t2w_wakelock);
+		#endif
+
+		pr_err("[TouchKey] Touch2Wake On\n");
+
+		return count;
+	}
+
+	if (!strncmp(buf, "off", 3)) {
+		bTouch2Wake = false;
+
+		#if CONFIG_HAS_WAKELOCK
+		wake_unlock(&t2w_wakelock);
+		#endif
+
+		pr_err("[TouchKey] Touch2Wake Off\n");
+
+		return count;
+	}
+		
+	return count;
+}
+
+static struct kobj_attribute cypress_touch2wake_interface = __ATTR(touch2wake, 0644, cypress_touch2wake_show, cypress_touch2wake_store);
+
+static ssize_t cypress_forceled_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+	sprintf(buf, "%s\n", led_disabled ? "on" : "off");
+
+	return strlen(buf);
+}
+
+static ssize_t cypress_forceled_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	if (!strncmp(buf, "on", 2)) {
+		if (info->brightness > 0) {
+			cypress_touchkey_brightness_set(&info->leds, LED_OFF);
+		}
+
+		info->current_status = 0;
+		led_disabled  = 1;
+
+		pr_err("[TouchKey] LED Off\n");
+
+		return count;
+	}
+
+	if (!strncmp(buf, "off", 3)) {
+		info->current_status = 1;
+		led_disabled = 0;
+		pr_err("[TouchKey] LED On\n");
+
+		return count;
+	}
+		
+	return count;
+}
+
+static struct kobj_attribute cypress_forceled_interface = __ATTR(led_disable, 0644, cypress_forceled_show, cypress_forceled_store);
+
+static struct attribute *cypress_attrs[] = {
+	&cypress_touch2wake_interface.attr, 
+	&cypress_forceled_interface.attr, 
+	NULL,
+};
+
+static struct attribute_group cypress_interface_group = {
+	.attrs = cypress_attrs,
+};
+
+static struct kobject *cypress_kobject;
+
 static int __devinit cypress_touchkey_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
 {
@@ -567,6 +665,22 @@ static int __devinit cypress_touchkey_probe(struct i2c_client *client,
 	cypress_thd_change(vbus_state);
 	cypress_touchkey_auto_cal(info);
 
+	cypress_kobject = kobject_create_and_add("cypress", kernel_kobj);
+
+	if (!cypress_kobject) {
+		return -ENOMEM;
+	}
+
+	ret = sysfs_create_group(cypress_kobject, &cypress_interface_group);
+
+	if (ret) {
+		kobject_put(cypress_kobject);
+	}
+
+#if CONFIG_HAS_WAKELOCK
+	wake_lock_init(&t2w_wakelock, WAKE_LOCK_SUSPEND, "touch2wake_wakelock");
+#endif
+
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	info->early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
 	info->early_suspend.suspend = cypress_touchkey_early_suspend;
@@ -626,6 +740,9 @@ static int __devexit cypress_touchkey_remove(struct i2c_client *client)
 	if (info->irq >= 0)
 		free_irq(info->irq, info);
 	input_unregister_device(info->input_dev);
+#if CONFIG_HAS_WAKELOCK
+	wake_lock_destroy(&t2w_wakelock);
+#endif
 	kfree(info);
 	return 0;
 }
@@ -667,11 +784,21 @@ static void cypress_touchkey_early_suspend(struct early_suspend *h)
 {
 	struct cypress_touchkey_info *info;
 	info = container_of(h, struct cypress_touchkey_info, early_suspend);
-	if (!suspend_con)
+	if (!bTouch2Wake)
 		cypress_touchkey_suspend(&info->client->dev);
 
+	/* In some cases, led doesn't turn off */
+	if (bTouch2Wake) {
+		if (info->brightness > 0) {
+			pr_err("[TouchKey] LED is on in suspend, turning OFF...\n");
+			cypress_touchkey_brightness_set(&info->leds, LED_OFF);
+		}
+	}
+
 	#ifdef CONFIG_LEDS_CLASS
-	info->current_status = 0;
+	if(!bTouch2Wake)
+		/* Allow to enable LED with Touch2Wake */
+		info->current_status = 0;
 	#endif
 }
 
@@ -679,13 +806,15 @@ static void cypress_touchkey_late_resume(struct early_suspend *h)
 {
 	struct cypress_touchkey_info *info;
 	info = container_of(h, struct cypress_touchkey_info, early_suspend);
-	if (!suspend_con)
+	if (!bTouch2Wake)
 		cypress_touchkey_resume(&info->client->dev);
 
 	#ifdef CONFIG_LEDS_CLASS
 	/*led sysfs write led value before resume process is not executed */
-	info->current_status = 1;
-	queue_work(info->led_wq, &info->led_work);
+	if (!led_disabled) {
+		info->current_status = 1;
+		queue_work(info->led_wq, &info->led_work);
+	}
 	#endif
 }
 #endif
