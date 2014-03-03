@@ -105,6 +105,11 @@
 #define USB_SERIAL_NUMBER_LEN 31
 #endif
 
+#ifdef CONFIG_KEXEC_HARDBOOT
+#define KEXEC_HARDBOOT_START   0x17E00000
+#define KEXEC_HARDBOOT_SIZE    (SZ_1M)
+#endif
+
 #ifndef SSG_CAMERA_ENABLE
 #define SSG_CAMERA_ENABLE
 #endif
@@ -147,6 +152,38 @@ static int __init ram_console_setup(char *p)
 __setup("mem_ram_console=", ram_console_setup);
 
 #endif // CONFIG_ANDROID_RAM_CONSOLE
+
+#if defined(CONFIG_KEXEC_HARDBOOT)
+static struct resource kexec_hardboot_resources[] = {
+	[0] = {
+		.start  = KEXEC_HARDBOOT_START,
+		.end    = KEXEC_HARDBOOT_START +
+			KEXEC_HARDBOOT_SIZE - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+};
+
+static struct platform_device kexec_hardboot_device = {
+	.name           = "kexec_hardboot",
+	.id             = -1,
+};
+
+static void kexec_hardboot_reserve(void)
+{
+	if (memblock_reserve(KEXEC_HARDBOOT_START, KEXEC_HARDBOOT_SIZE)) {
+		printk(KERN_ERR "Failed to reserve memory for KEXEC_HARDBOOT: "
+		       "%dM@0x%.8X\n",
+		       KEXEC_HARDBOOT_SIZE / SZ_1M, KEXEC_HARDBOOT_START);
+		return;
+	}
+	memblock_free(KEXEC_HARDBOOT_START, KEXEC_HARDBOOT_SIZE);
+	memblock_remove(KEXEC_HARDBOOT_START, KEXEC_HARDBOOT_SIZE);
+
+	kexec_hardboot_device.num_resources  = ARRAY_SIZE(kexec_hardboot_resources);
+	kexec_hardboot_device.resource       = kexec_hardboot_resources;
+}
+#endif
+
 #if defined(CONFIG_KEYBOARD_CYPRESS_TOUCH)
 static struct cypress_touchkey_platform_data  cypress_touchkey_pdata = {
 	.gpio_scl = TOUCHKEY_SCL_JANICE_R0_0,
@@ -1888,6 +1925,9 @@ static struct platform_device bcm4330_bluetooth_platform_driver = {
 
 static struct platform_device *platform_devs[] __initdata = {
 	&u8500_shrm_device,
+#ifdef CONFIG_KEXEC_HARDBOOT
+	&kexec_hardboot_device,
+#endif
 #ifdef SSG_CAMERA_ENABLE
 	&ux500_mmio_device,
 #endif
@@ -2132,6 +2172,10 @@ static void __init janice_init_machine(void)
 
 #ifdef CONFIG_KEYBOARD_GPIO
 	platform_device_register(&janice_gpio_keys_device);
+#endif
+
+#if defined(CONFIG_KEXEC_HARDBOOT)
+	kexec_hardboot_reserve();
 #endif
 
 	sec_cam_init();
