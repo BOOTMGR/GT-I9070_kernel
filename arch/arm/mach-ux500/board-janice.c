@@ -106,6 +106,9 @@
 #endif
 
 #ifdef CONFIG_KEXEC_HARDBOOT
+
+#include <linux/memblock.h>
+
 #define KEXEC_HARDBOOT_START   0x17E00000
 #define KEXEC_HARDBOOT_SIZE    (SZ_1M)
 #endif
@@ -2144,6 +2147,10 @@ static void __init janice_init_machine(void)
 		platform_device_register(&ram_console_device);
 #endif
 
+#if defined(CONFIG_KEXEC_HARDBOOT)
+	kexec_hardboot_reserve();
+#endif
+
 	platform_device_register(&db8500_prcmu_device);
 	platform_device_register(&u8500_usecase_gov_device);
 
@@ -2174,9 +2181,6 @@ static void __init janice_init_machine(void)
 	platform_device_register(&janice_gpio_keys_device);
 #endif
 
-#if defined(CONFIG_KEXEC_HARDBOOT)
-	kexec_hardboot_reserve();
-#endif
 
 	sec_cam_init();
 
