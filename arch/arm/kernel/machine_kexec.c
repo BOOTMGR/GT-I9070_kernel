@@ -123,6 +123,16 @@ void machine_kexec(struct kimage *image)
 		kexec_reinit();
 
 #ifdef CONFIG_KEXEC_HARDBOOT
+	local_irq_disable();
+	local_fiq_disable();
+	setup_mm_for_reboot(0); /* mode is not used, so just pass 0*/
+	flush_cache_all();
+	outer_flush_all();
+	outer_disable();
+/*
+	Freezes janice
+	cpu_proc_fin();
+*/
 	/* Run any final machine-specific shutdown code. */
 	if (image->hardboot && kexec_hardboot_hook)
 		kexec_hardboot_hook();

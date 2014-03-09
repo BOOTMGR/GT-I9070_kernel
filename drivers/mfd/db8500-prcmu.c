@@ -54,6 +54,11 @@
 #include <linux/ftrace_event.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+
+#ifdef CONFIG_KEXEC_HARDBOOT
+#include <asm/kexec.h>
+#endif
+
 void log_this(u8 pc, char* a, u32 extra1, char* b, u32 extra2);
 
 static char *fw_project_name(u8 project);
@@ -2995,6 +3000,22 @@ static void db8500_prcmu_system_reset(u16 reset_code)
 	smp_wmb();
 }
 
+/*
+ * Hardboot function for kexec
+ * Reset system by writing 1 to APE_SOFTRST register
+ */
+#ifdef CONFIG_KEXEC_HARDBOOT
+static void ux500_kexec_hardboot_hook(void)
+{
+	printk(KERN_ERR "HARDBOOT : %s\n", __FUNCTION__);
+	writew_relaxed(0x5501, (tcdm_base + PRCM_SW_RST_REASON));
+	writel_relaxed(1, PRCM_APE_SOFTRST);
+	mdelay(1000);
+	printk(KERN_ERR "HARDBOOT : Reset Failed...!\n");
+	while (1);
+}
+#endif
+
 /**
  * db8500_prcmu_get_reset_code - Retrieve SW reset reason code
  *
@@ -3695,7 +3716,9 @@ struct prcmu_fops_register_data *__init db8500_prcmu_early_init(void)
 		set_irq_flags(irq, IRQF_VALID);
 	}
 	compute_armss_rate();
-	
+#ifdef CONFIG_KEXEC_HARDBOOT
+	kexec_hardboot_hook = ux500_kexec_hardboot_hook;
+#endif
 	wake_lock_init(&prcmu_uart_wake_lock, WAKE_LOCK_SUSPEND, "prcmu_uart_wake_lock");
 
 	/*  early init of dbx500-prcmu */

@@ -86,7 +86,12 @@ hardboot:
 	str	r1, [r0]
 
 #if defined(CONFIG_ARCH_U8500)
-	
+	ldr r0,soft_reset_addr
+	mov r1, #1
+	str r1, [r0]
+
+soft_reset_addr:
+	.word 0x80157228
 #else
 #error "No reboot method defined for hardboot."
 #endif

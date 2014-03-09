@@ -27,10 +27,6 @@
 #include <mach/system.h>
 #include <mach/pm.h>
 
-#ifdef CONFIG_KEXEC_HARDBOOT
-#include <asm/kexec.h>
-#endif
-
 #include "clock.h"
 
 void __iomem *_PRCMU_BASE;
@@ -85,12 +81,6 @@ void ux500_restart(char mode, const char *cmd)
 	while (1);
 }
 
-#ifdef CONFIG_KEXEC_HARDBOOT
-static void ux500_kexec_hardboot_hook(void)
-{
-}
-#endif
-
 static int ux500_gic_irq_set_wake(struct irq_data *d, unsigned int on)
 {
 	return 0;
@@ -129,9 +119,6 @@ void __init ux500_init_irq(void)
 	if (!arm_pm_restart)
 		arm_pm_restart = ux500_restart;
 	clk_init();
-#ifdef CONFIG_KEXEC_HARDBOOT
-	kexec_hardboot_hook = ux500_kexec_hardboot_hook;
-#endif
 }
 
 #ifdef CONFIG_CACHE_L2X0
